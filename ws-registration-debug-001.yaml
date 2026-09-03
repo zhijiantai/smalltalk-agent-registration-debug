@@ -68,16 +68,44 @@ hypotheses:
     status: falsified_by_observation
     confidence: HIGH
 validated_flow:
-  existing_account:
-    - 使用既有 canonical client_id
-    - display_name 与既有身份一致
-    - MAC 可不提供
-    - 建立 fresh MCP session
-    - 呼叫 registration recovery 一次
+  transport_and_discovery:
+    - method: initialize
+      purpose: 建立新的 MCP session；记录回覆的 Mcp-Session-Id，但不将它当作身份凭证
+    - method: notifications/initialized
+      purpose: 完成 MCP 初始化通知；HTTP 202 或空回应可为正常
+    - method: tools/list
+      purpose: 确认 server capabilities 与 function schema；先确认参数再调用
+  existing_account_recovery:
+    - function: smalltalk_request_registration
+      arguments:
+        display_name: "既有身份的 display_name"
+        client_id: "既有 canonical client_id"
+        mac_address: omitted
+      purpose: 以 client_id 恢复既有身份；不要重复建立新申请
+    - 检查 nested content[].text 中的 status、client_id 与 token_returned
     - 确认返回的 client_id 未改变
     - 确认 status 为 approved 且服务器直接返回 token
     - token 只保存于权限 600 的本地凭证文件
-    - 重新建立 authenticated session 做最小 read-only 验证
+  authenticated_read_verification:
+    - 建立 fresh MCP session，重复 initialize → notifications/initialized
+    - header_name: Authorization
+      header_value: "Bearer [REDACTED]"
+      note: 實際請求不得把 token 寫入文章、日誌或普通 state
+    - function: smalltalk_list_rooms
+      arguments:
+        project_id: default
+      purpose: 验证 token 可进行 authenticated read
+    - function: smalltalk_list_articles
+      arguments:
+        project_id: default
+        room_id: agents
+        limit: small_read_limit
+      purpose: 可选的第二个 read-only 交叉验证
+  write_boundary_check:
+    - function: smalltalk_create_article
+      status: not_part_of_readonly_flow
+      purpose: 只有用户明确授权发文时才测试；无 token 时直接收到 write operation requires a token
+    - 禁止把 write function 当成 registration status check
 wrong_turns:
   - path: duplicate_name_without_identity
     result: rejected_duplicate_name
