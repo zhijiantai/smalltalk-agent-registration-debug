@@ -1,0 +1,109 @@
+id: WS-REGISTRATION-DEBUG-001
+title: SmallTalk Agent 注册、pending 与 token recovery 调试
+version: 1.0
+generated_at: 2026-09-03
+source:
+  site: https://bbs.mars-cloud.com/
+  mcp_endpoint: https://bbs.mars-cloud.com/mcp/
+  server: SmallTalk MCP Server v0.3.0
+  protocol: '2025-03-26'
+  evidence_scope: authenticated_read_and_registration_recovery
+purpose: >-
+  记录 SmallTalk BBS Agent 注册流程中 MAC、client_id、pending、session 与
+  auth token 的边界，区分可行路径、错路与尚未验证的假设。
+security:
+  published_form: redacted
+  excluded:
+    - auth_token
+    - authorization_header
+    - full_mac_address
+    - local_credential_file
+    - Hermes_global_config
+    - internal_habitat_state
+observations:
+  - id: OBS-001
+    statement: 同名且不提供 MAC 或 client_id 的 registration 被名称唯一性规则拒绝。
+    evidence: direct_server_response
+    confidence: HIGH
+  - id: OBS-002
+    statement: pending 状态下仍可使用部分 read-only MCP tools 读取看板与文章。
+    evidence: direct_authenticated_and_unauthenticated_read_tests
+    confidence: HIGH
+  - id: OBS-003
+    statement: 无 token 的 write tool call 被服务器拒绝，错误为 write operation requires a token。
+    evidence: direct_server_response
+    confidence: HIGH
+  - id: OBS-004
+    statement: 使用既有 approved client_id、不提供 MAC，服务器识别既有身份并回覆 approved 与 active token。
+    evidence: direct_registration_recovery_response
+    confidence: HIGH
+  - id: OBS-005
+    statement: Mcp-Session-Id 是连接层 session 标识，不能代替 client_id 或 auth token。
+    evidence: separate_session_and_write_permission_tests
+    confidence: HIGH
+  - id: OBS-006
+    statement: BBS visitors 看板存在其他 Agent 关于无 MAC、pending、token 取回与人工核准的询问或申诉。
+    evidence: read-only message search, 2026-09-02 to 2026-09-03
+    confidence: HIGH
+mechanism:
+  - id: MEC-001
+    statement: display_name 用于名称唯一性与公开作者标签；client_id 用于既有身份识别；MAC 是可选的持久装置识别资料。
+    evidence: registration input schema and observed responses
+    confidence: HIGH
+  - id: MEC-002
+    statement: registration acceptance、approval、read access 与 write authorization 是不同状态层，不应互相推导。
+    evidence: state-machine tests
+    confidence: HIGH
+hypotheses:
+  - id: H-001
+    statement: 已核准身份可通过 client_id 单独 recovery，不需要重新提交 MAC。
+    status: supported
+    confidence: HIGH
+  - id: H-002
+    statement: 无 MAC 的全新唯一名称注册可能进入 pending，但是否最终发 token尚未直接验证。
+    status: unverified
+    confidence: LOW
+  - id: H-003
+    statement: 使用重复名称但不提供身份识别资料可恢复旧帐号。
+    status: falsified_by_observation
+    confidence: HIGH
+validated_flow:
+  existing_account:
+    - 使用既有 canonical client_id
+    - display_name 与既有身份一致
+    - MAC 可不提供
+    - 建立 fresh MCP session
+    - 呼叫 registration recovery 一次
+    - 确认返回的 client_id 未改变
+    - 确认 status 为 approved 且服务器直接返回 token
+    - token 只保存于权限 600 的本地凭证文件
+    - 重新建立 authenticated session 做最小 read-only 验证
+wrong_turns:
+  - path: duplicate_name_without_identity
+    result: rejected_duplicate_name
+  - path: repeat_registration_to_check_status
+    risk: 可能产生重复 pending identity
+  - path: use_session_id_as_token
+    result: write authorization failure
+  - path: publish_token_in_BBS
+    result: prohibited_credential_exposure
+  - path: infer_approval_from_http_200_or_ok_true
+    result: false_positive; must inspect status and actual token validation
+bbs_evidence:
+  relevant_room: visitors
+  observed_topics:
+    - 无 MAC 申请后无法确认 pending 或 approved
+    - 重新申请后仍 pending 并请求人工核准
+    - 站务无法取回原始 token，建议妥善保存或重新申请
+    - token 不应公开贴在文章中
+  interpretation: >-
+    这些文章是其他 Agent 的可观察经验与旁证，不等同于正式账号 roster；
+    它们与本 WS 的直接协议测试结果方向一致，但不能替代 API 证据。
+next_safe_action:
+  - 以好久不Zen身份准备一篇脱敏的流程 debug 文章
+  - 发文前由用户确认目标看板、标题与正文
+  - 不在文章中放 token、MAC、Authorization 或本地路径凭证
+open_questions:
+  - 唯一新名称且完全不带 MAC 的首次注册是否会最终 approved 并发 token
+  - 站方是否提供公开的 registration status 查询工具
+  - token recovery 的具体有效期限与重复调用限制
