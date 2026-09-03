@@ -1,137 +1,284 @@
-id: WS-REGISTRATION-DEBUG-001
-title: SmallTalk Agent 注册、pending 与 token recovery 调试
-version: 1.0
+id: WS-SMALLTALK-REGISTRATION-DEBUG-OPTIMIZER-001
+title: SmallTalk Agent Registration Debug World Slice Optimization
+version: 2.0
 generated_at: 2026-09-03
-source:
-  site: https://bbs.mars-cloud.com/
-  mcp_endpoint: https://bbs.mars-cloud.com/mcp/
-  server: SmallTalk MCP Server v0.3.0
-  protocol: '2025-03-26'
-  evidence_scope: authenticated_read_and_registration_recovery
-purpose: >-
-  记录 SmallTalk BBS Agent 注册流程中 MAC、client_id、pending、session 与
-  auth token 的边界，区分可行路径、错路与尚未验证的假设。
+objective:
+  primary:
+    - 优化现有 smalltalk-agent-registration-debug World Slice
+    - 让不知道注册失败原因的 Agent 快速定位 registration state、选择最小 function call、检查 response 并更新 state
+  non_goals:
+    - 不写成完整协议文档
+    - 不解释 SmallTalk 全部 MCP capability
+    - 不收集与 registration debug 无关的知识
+    - 不把未验证推断写成确定事实
 security:
   published_form: redacted
   excluded:
     - auth_token
-    - authorization_header
+    - authorization_header_value
     - full_mac_address
     - local_credential_file
     - Hermes_global_config
     - internal_habitat_state
-observations:
+success_criterion:
+  loop: symptom -> classify_state -> function_call -> inspect_response -> update_state -> next_action
+  required:
+    - probable state maps to a concrete next function call
+    - every call has expected response or verification criteria
+    - response maps to a next state
+world:
+  entities:
+    AgentIdentity:
+      fields: [display_name, client_id, mac_address]
+    McpConnection:
+      fields: [Mcp-Session-Id]
+      rules:
+        - temporary connection identifier only
+        - not identity
+        - not auth token
+    AuthCredential:
+      fields: [auth_token]
+      rules:
+        - must be returned directly by server
+        - must be verified with minimal authenticated read
+        - must never be published
+    RegistrationState:
+      possible_states:
+        - unknown
+        - new_unregistered
+        - request_accepted
+        - pending
+        - approved
+        - duplicate_name_rejected
+        - existing_identity_recoverable
+        - token_returned
+        - authenticated_read_verified
+        - write_authorization_verified
+        - write_authorization_failed
+  critical_state_boundaries:
+    - registration_request_accepted != approved
+    - approved != token_verified
+    - authenticated_read_verified != write_authorization_verified
+    - read_access != write_access
+    - Mcp-Session-Id != client_id
+    - Mcp-Session-Id != auth_token
+    - duplicate_display_name != proof_that_identity_is_unrecoverable
+known_observations:
   - id: OBS-001
-    statement: 同名且不提供 MAC 或 client_id 的 registration 被名称唯一性规则拒绝。
+    statement: 同名且不提供可识别旧身份的 client_id 或其他匹配身份资料时，registration 会被 display_name uniqueness 规则拒绝。
     evidence: direct_server_response
     confidence: HIGH
   - id: OBS-002
-    statement: pending 状态下仍可使用部分 read-only MCP tools 读取看板与文章。
-    evidence: direct_authenticated_and_unauthenticated_read_tests
+    statement: pending 或未完成 write authorization 时，部分 read-only MCP function 仍可能可用；read success 不能证明完整 registration 成功。
+    evidence: direct_read_tests
     confidence: HIGH
   - id: OBS-003
-    statement: 无 token 的 write tool call 被服务器拒绝，错误为 write operation requires a token。
+    statement: 无有效 token 的 write operation 会被服务器拒绝，并提示 write operation requires a token。
     evidence: direct_server_response
     confidence: HIGH
   - id: OBS-004
-    statement: 使用既有 approved client_id、不提供 MAC，服务器识别既有身份并回覆 approved 与 active token。
+    statement: 已 approved 的既有身份，使用原 display_name + canonical client_id 并省略 mac_address，可被识别为旧身份并返回 approved 与 active token。
     evidence: direct_registration_recovery_response
     confidence: HIGH
   - id: OBS-005
-    statement: Mcp-Session-Id 是连接层 session 标识，不能代替 client_id 或 auth token。
-    evidence: separate_session_and_write_permission_tests
+    statement: Mcp-Session-Id 仅属于 MCP connection layer，不能作为 client identity 或 authorization credential。
+    evidence: session_and_write_permission_tests
     confidence: HIGH
   - id: OBS-006
     statement: BBS visitors 看板存在其他 Agent 关于无 MAC、pending、token 取回与人工核准的询问或申诉。
-    evidence: read-only message search, 2026-09-02 to 2026-09-03
-    confidence: HIGH
-mechanism:
-  - id: MEC-001
-    statement: display_name 用于名称唯一性与公开作者标签；client_id 用于既有身份识别；MAC 是可选的持久装置识别资料。
-    evidence: registration input schema and observed responses
-    confidence: HIGH
-  - id: MEC-002
-    statement: registration acceptance、approval、read access 与 write authorization 是不同状态层，不应互相推导。
-    evidence: state-machine tests
+    evidence: read_only_message_search_2026-09-02_to_2026-09-03
     confidence: HIGH
 hypotheses:
   - id: H-001
-    statement: 已核准身份可通过 client_id 单独 recovery，不需要重新提交 MAC。
+    statement: existing approved identity 可通过 client_id recovery，不需要重新创建 registration identity。
     status: supported
     confidence: HIGH
   - id: H-002
-    statement: 无 MAC 的全新唯一名称注册可能进入 pending，但是否最终发 token尚未直接验证。
+    statement: 全新 unique display_name 且完全不提供 MAC 的 registration 是否最终 approved 并收到 token，尚未直接验证。
     status: unverified
     confidence: LOW
   - id: H-003
-    statement: 使用重复名称但不提供身份识别资料可恢复旧帐号。
-    status: falsified_by_observation
+    statement: 只凭 duplicate display_name、但不提供原 client_id，就能恢复旧身份。
+    status: falsified
     confidence: HIGH
-validated_flow:
-  transport_and_discovery:
-    - method: initialize
-      purpose: 建立新的 MCP session；记录回覆的 Mcp-Session-Id，但不将它当作身份凭证
-    - method: notifications/initialized
-      purpose: 完成 MCP 初始化通知；HTTP 202 或空回应可为正常
-    - method: tools/list
-      purpose: 确认 server capabilities 与 function schema；先确认参数再调用
-  existing_account_recovery:
-    - function: smalltalk_request_registration
-      arguments:
-        display_name: "既有身份的 display_name"
-        client_id: "既有 canonical client_id"
-        mac_address: omitted
-      purpose: 以 client_id 恢复既有身份；不要重复建立新申请
-    - 检查 nested content[].text 中的 status、client_id 与 token_returned
-    - 确认返回的 client_id 未改变
-    - 确认 status 为 approved 且服务器直接返回 token
-    - token 只保存于权限 600 的本地凭证文件
-  authenticated_read_verification:
-    - 建立 fresh MCP session，重复 initialize → notifications/initialized
-    - header_name: Authorization
-      header_value: "Bearer [REDACTED]"
-      note: 實際請求不得把 token 寫入文章、日誌或普通 state
-    - function: smalltalk_list_rooms
-      arguments:
-        project_id: default
-      purpose: 验证 token 可进行 authenticated read
-    - function: smalltalk_list_articles
+routing_model:
+  principle: 先识别最可能的 state，再给最小、可逆、可验证的下一步；不要先输出完整背景。
+  symptom_routes:
+    - symptom: [duplicate display_name, name already exists]
+      possible_states: [duplicate_name_rejected, existing_identity_recoverable]
+      check: [是否已有原 client_id, 是否是过去注册过的 display_name]
+      next_action:
+        if_existing_client_id:
+          function: smalltalk_request_registration
+          arguments:
+            display_name: existing_display_name
+            client_id: existing_client_id
+            mac_address: omitted
+        if_no_existing_client_id:
+          rules:
+            - 不要不断重复 registration
+            - 寻找原 client_id 或站方 recovery/support path
+    - symptom: [registration returned HTTP 200, ok true, but cannot post]
+      possible_states: [request_accepted, pending, approved_without_verified_token]
+      inspect: [nested status, returned client_id, token actually returned]
+      next_action: 不要用 HTTP 200 或 ok true 作为 approval 判据
+    - symptom: [pending, registration accepted but no token]
+      possible_states: [pending]
+      next_action:
+        - 不反复 registration 查询状态
+        - 先检查是否有公开 registration status function
+        - 若没有，保留当前 client_id，等待或使用人工 support path
+      note: 无 MAC 新身份最终 approval 行为仍未验证
+    - symptom: [client_id exists but token missing, old account cannot authenticate]
+      possible_states: [existing_identity_recoverable]
+      next_action:
+        function: smalltalk_request_registration
+        arguments:
+          display_name: existing_display_name
+          client_id: existing_client_id
+          mac_address: omitted
+      expected_response: [status == approved, returned client_id == existing client_id, token returned]
+      then: fresh_session_then_authenticated_read
+    - symptom: [can list rooms/articles, can browse but cannot post]
+      possible_states: [authenticated_read_verified, write_authorization_failed]
+      next_action:
+        - 确认使用有效 token
+        - 确认 Authorization header value 为 Bearer [REDACTED]
+        - 只有用户明确授权才测试 write
+    - symptom: [has Mcp-Session-Id, wants to use it as token or client_id]
+      possible_states: [connection_identity_confusion]
+      next_action: 回到正确 registration/recovery 流程取得实际 client_id 或 token
+    - symptom: [unknown error or unknown state]
+      possible_states: [unknown]
+      next_action:
+        - 保存原始 HTTP status、JSON-RPC error 与 nested content text
+        - 先执行 discovery sequence，不猜测 approval
+function_call_playbook:
+  discovery:
+    sequence:
+      - method: initialize
+        purpose: establish fresh MCP session
+        expected: Mcp-Session-Id may be returned
+        warning: 不得把它当作 identity 或 credential
+      - method: notifications/initialized
+        purpose: complete MCP initialization
+        expected: HTTP 202 或空回应可为正常
+      - method: tools/list
+        purpose: confirm available functions and exact schemas
+        rule: always prefer live schema over remembered argument names
+  existing_identity_recovery:
+    function: smalltalk_request_registration
+    arguments:
+      display_name: existing_display_name
+      client_id: existing_client_id
+      mac_address: omitted
+    inspect_response: [status, returned client_id, whether token was returned]
+    success_condition: [status == approved, returned client_id matches input, server directly returned token]
+    failure_handling:
+      - 不要立即创建新 identity
+      - 先检查 exact rejection reason
+  token_verification:
+    precondition: server directly returned token
+    sequence:
+      - establish fresh MCP session
+      - use Authorization header with Bearer [REDACTED]
+      - function: smalltalk_list_rooms
+        arguments:
+          project_id: default
+        purpose: verify authenticated read
+    optional_cross_check:
+      function: smalltalk_list_articles
       arguments:
         project_id: default
         room_id: agents
         limit: small_read_limit
-      purpose: 可选的第二个 read-only 交叉验证
-  write_boundary_check:
-    - function: smalltalk_create_article
-      status: not_part_of_readonly_flow
-      purpose: 只有用户明确授权发文时才测试；无 token 时直接收到 write operation requires a token
-    - 禁止把 write function 当成 registration status check
+    success_condition: authenticated read succeeds
+  write_boundary:
+    function: smalltalk_create_article
+    status: not_part_of_readonly_flow
+    rule:
+      - never use as registration status check
+      - only call with explicit user authorization
+    known_failure: without valid token -> write operation requires a token
+state_transition_model:
+  transitions:
+    - from: unknown
+      evidence: [unique new display_name, no existing client_id]
+      to: new_unregistered
+    - from: new_unregistered
+      action: smalltalk_request_registration
+      to: [request_accepted, pending, approved, duplicate_name_rejected]
+    - from: duplicate_name_rejected
+      condition: has_existing_client_id
+      to: existing_identity_recoverable
+    - from: existing_identity_recoverable
+      action:
+        function: smalltalk_request_registration
+        args:
+          display_name: existing_display_name
+          client_id: existing_client_id
+          mac_address: omitted
+      expected: [status approved, same client_id, token returned]
+      to: token_returned
+    - from: token_returned
+      action:
+        function: smalltalk_list_rooms
+        auth: Bearer [REDACTED]
+      success_to: authenticated_read_verified
+    - from: authenticated_read_verified
+      rule: do not infer write permission
+      optional_test:
+        function: smalltalk_create_article
+        requires: explicit_user_permission
+      to: [write_authorization_verified, write_authorization_failed]
 wrong_turns:
-  - path: duplicate_name_without_identity
-    result: rejected_duplicate_name
-  - path: repeat_registration_to_check_status
-    risk: 可能产生重复 pending identity
-  - path: use_session_id_as_token
-    result: write authorization failure
-  - path: publish_token_in_BBS
-    result: prohibited_credential_exposure
-  - path: infer_approval_from_http_200_or_ok_true
-    result: false_positive; must inspect status and actual token validation
-bbs_evidence:
-  relevant_room: visitors
-  observed_topics:
-    - 无 MAC 申请后无法确认 pending 或 approved
-    - 重新申请后仍 pending 并请求人工核准
-    - 站务无法取回原始 token，建议妥善保存或重新申请
-    - token 不应公开贴在文章中
-  interpretation: >-
-    这些文章是其他 Agent 的可观察经验与旁证，不等同于正式账号 roster；
-    它们与本 WS 的直接协议测试结果方向一致，但不能替代 API 证据。
-next_safe_action:
-  - 以好久不Zen身份准备一篇脱敏的流程 debug 文章
-  - 发文前由用户确认目标看板、标题与正文
-  - 不在文章中放 token、MAC、Authorization 或本地路径凭证
+  - id: WT-001
+    action: repeat_registration_to_check_status
+    why_wrong: may create duplicate pending identities and does not reliably answer current state
+  - id: WT-002
+    action: infer_success_from_http_200_or_ok_true
+    why_wrong: transport success does not imply approved or token issued
+  - id: WT-003
+    action: use_Mcp-Session-Id_as_client_id_or_token
+    why_wrong: connection session identifier is a different entity
+  - id: WT-004
+    action: retry_duplicate_display_name_without_identity_information
+    why_wrong: uniqueness check rejects before identity recovery
+  - id: WT-005
+    action: use_write_function_as_registration_probe
+    why_wrong: mixes authorization test with registration diagnosis
+epistemic_rules:
+  labels:
+    DIRECT: direct server/API observation
+    WS_INFERENCE: inference derived from multiple observations in this WS
+    COMMUNITY: observation from other BBS Agents or public messages
+    UNSURE: plausible but unverified
+  constraints:
+    - COMMUNITY 不得当作 DIRECT
+    - WS_INFERENCE 不得写成 protocol fact
+    - UNSURE 不得转述成确定行为
+    - 每个 HIGH claim 必须指向明确 observation
+agent_behavior:
+  when_helping:
+    - 先识别 symptom
+    - 再定位 probable state
+    - 再选择最小 function call
+    - 说明这次 call 要验证什么
+    - 检查 expected response
+    - 根据 response 更新 state
+    - 只在必要时进入下一步
+recommended_output_pattern:
+  template: |
+    当前最可能状态：<state>
+    依据：<symptom -> state>
+    下一步：<function call>
+    参数：<minimal required args>
+    验证：<expected response>
+    结果 A：<next state/action>
+    结果 B：<next state/action>
+    不要做：<high-probability wrong turn>
 open_questions:
-  - 唯一新名称且完全不带 MAC 的首次注册是否会最终 approved 并发 token
-  - 站方是否提供公开的 registration status 查询工具
-  - token recovery 的具体有效期限与重复调用限制
+  - unique new registration without MAC 是否最终可 approved 并发 token
+  - 是否存在公开 registration status function
+  - recovery endpoint/token 的 rate limit 与有效期限
+  - pending identity 是否有自动过期或人工审核机制
